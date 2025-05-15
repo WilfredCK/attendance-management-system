@@ -1,19 +1,28 @@
-#This is my main FastAPI app and routes
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, APIRouter
+from schemas import StudentCreate,AttendanceCreate, StudentResponse, InstructorCreate, AttendanceResponse  # Import your Pydantic response model
 from pydantic import BaseModel
 from datetime import datetime, timedelta, timezone
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from typing import List
+from sqlalchemy import text
 from passlib.context import CryptContext  # For password hashing
-# Import your authentication functions
-from auth import register_user, login_user, get_current_user
-from models import User, UserLogin
+from auth import login_user, router as auth_router
+from sqlalchemy.orm import Session
+from database import get_db  # Import get_db from database.py
+from models import Attendance,AttendanceStatus, Student, Instructor, ClassSession, Course, FacialEmbedding, SessionDay  # Import your SQLAlchemy models
+from sqlalchemy.exc import SQLAlchemyError
+from fastapi.logger import logger
+import logging
+import traceback
 
 # -------------------------------
 # App and Security Setup
 # -------------------------------
 app = FastAPI()
+
+# Include your routes here
+app.include_router(auth_router)
 
 SECRET_KEY = "your-secret-key"
 ALGORITHM = "HS256"
@@ -21,32 +30,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
-
-# -------------------------------
-# In-memory "databases"
-# -------------------------------
-users_db = {}
-students_db = {}         # key: student_id, value: Student
-attendance_records = []  # list of Attendance
-
-
-# -------------------------------
-# Pydantic models for validation
-# -------------------------------
-
-class User(BaseModel):
-    username: str
-    password: str
-    role: str
-
-class Student(BaseModel):
-    student_id: str
-    name: str
-
-class Attendance(BaseModel):
-    student_id: str
-    timestamp: datetime
-    session: str
 
 # -------------------------------
 # JWT Helper Functions
@@ -71,64 +54,189 @@ def decode_jwt_token(token: str):
 def get_current_user(token: str = Depends(oauth2_scheme)):
     return decode_jwt_token(token)
 
+@app.get("/test-db-connection")
+def test_db_connection(db: Session = Depends(get_db)):
+    try:
+        # Simple raw SQL query to test connection
+        db.execute(text("SELECT 1"))
+        return {"message": "✅ Connected to PostgreSQL database!"}
+    except Exception as e:
+        print("🔥 Database connection failed:", str(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail="Database connection failed")
 # -------------------------------
 # Routes for Authentication
 # -------------------------------
-@app.post("/register/")
-def register_user(user: User):
-    if user.username in users_db:
-        raise HTTPException(status_code=400, detail="User already exists")
+@app.post("/register/student", response_model=StudentResponse)
+def register_student(student: StudentCreate, db: Session = Depends(get_db)):
+    try:
+        # Check if student already exists
+        db_student = db.query(Student).filter(Student.regno == student.regno).first()
+        if db_student:
+            raise HTTPException(status_code=400, detail="Student already exists")
 
-    hashed_password = pwd_context.hash(user.password)
-    users_db[user.username] = {
-        "username": user.username,
-        "hashed_password": hashed_password,
-        "role": user.role
-    }
+        hashed_password = pwd_context.hash(student.password)
+        new_student = Student(
+            regno=student.regno,
+            first_name=student.first_name,
+            middle_name=student.middle_name,
+            last_name=student.last_name,
+            email=student.email,
+            password=hashed_password,
+            year_of_study=student.year_of_study,
+            phone_number=student.phone_number,
+            role="student",  # Ensure role is "student"
+            programme=student.programme
+        )
+        
+        db.add(new_student)
+        db.commit()
+        db.refresh(new_student)
+
+        return StudentResponse(regno=new_student.regno,
+                           first_name=new_student.first_name,
+                           middle_name=new_student.middle_name,
+                           last_name=new_student.last_name,
+                           email=new_student.email,
+                           programme=new_student.programme, 
+                           year_of_study=new_student.year_of_study,
+                           phone_number=student.phone_number,
+                           )
+
+           
+    except Exception as e:
+     # This will show up in your terminal
+        logger.error("Error during student registration: %s", str(e))
+        raise HTTPException(status_code=500, detail="Internal server error")
+
     
-     # 👇 Auto-register student if role is student
-    if user.role == "student":
-        if user.username in students_db:
-            raise HTTPException(status_code=400, detail="Student already registered")
-        students_db[user.username] = {
-            "student_id": user.username,
-            "name": user.username  # or ask for name explicitly
-        }
+@app.post("/register/instructor", response_model=dict)
+def register_instructor(instructor: InstructorCreate, db: Session = Depends(get_db)):
+    # Check if instructor already exists
+    db_instructor = db.query(Instructor).filter(Instructor.phone_number == instructor.phone_number).first()
+    if db_instructor:
+        raise HTTPException(status_code=400, detail="Instructor already exists")
 
-    print(f"User registered: {user.username}")  # Debug log
-    return {"message": "User registered successfully"}
-
-from models import UserLogin  # use this instead of User
+    hashed_password = pwd_context.hash(instructor.password)
+    new_instructor = Instructor(
+        id=instructor.id,
+        first_name=instructor.first_name,
+        middle_name=instructor.middle_name,
+        last_name=instructor.last_name,
+        email=instructor.email,
+        phone_number=instructor.phone_number,
+        password=hashed_password,
+        role="instructor"  # Ensure role is "instructor"
+    )
+    
+    db.add(new_instructor)
+    db.commit()
+    db.refresh(new_instructor)
+    
+    return {"message": "Instructor registered successfully"}
 
 # OAuth2 token route
-@app.post("/token/")
-def oauth2_login(form_data: OAuth2PasswordRequestForm = Depends()):
-    if form_data.username not in users_db:
+@app.post("/token/")  # Token route for login
+def oauth2_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+    # Check if user exists
+    db_user = db.query(Student).filter(Student.regno == form_data.username).first() or db.query(Instructor).filter(Instructor.id == form_data.username).first()
+    
+    if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    stored_hashed_password = users_db[form_data.username]["hashed_password"]
-    if not pwd_context.verify(form_data.password, stored_hashed_password):
+    if not pwd_context.verify(form_data.password, db_user.password):
         raise HTTPException(status_code=401, detail="Invalid password")
 
-    # Get role from user db
-    role = users_db[form_data.username]["role"]
+    # Get role from user db (either student or instructor)
+    role = db_user.role
 
-    # Create JWT token
-    token_data = {
-        "sub": form_data.username,
-        "role": role
-    }
+    # Create JWT token with the role included
+    token_data = {"sub": form_data.username, "role": role}
     access_token = create_access_token(data=token_data)
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer"
-    }
-
+    return {"access_token": access_token, "token_type": "bearer"}
 
 @app.get("/me/")
 def get_me(current_user: dict = Depends(get_current_user)):
     return {"username": current_user["sub"], "role": current_user["role"]}
+
+# -------------------------------
+# Attendance Routes
+# -------------------------------
+
+# POST: Mark attendance
+@app.post("/mark-attendance/")
+def mark_attendance(
+    data: AttendanceCreate, 
+    current_user: dict = Depends(get_current_user), 
+    db: Session = Depends(get_db)
+):
+    # Determine student ID based on user role
+    if current_user["role"] == "student":
+        # Assuming current_user["sub"] holds the student id (not regno)
+        student_regno = current_user["sub"]
+    elif current_user["role"] == "instructor":
+        # For admin/instructor, student_id must be provided in data
+        student_regno = data.student_id
+    else:
+        raise HTTPException(status_code=403, detail="Access forbidden")
+
+    # Check if student exists by id (assuming id field)
+    student = db.query(Student).filter(Student.regno == student_regno).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+
+    # Check if attendance already marked for this session and student
+    attendance = db.query(Attendance).filter(
+        Attendance.student_id == student.id,
+        Attendance.session_id == data.session  # ensure field is session_id
+    ).first()
+
+    if attendance:
+        raise HTTPException(status_code=409, detail="Attendance already marked for this session")
+
+    # Add new attendance record
+    new_attendance = Attendance(
+        student_id=student.id,
+        recorded_at=data.timestamp,  # use correct field name for timestamp
+        session_id=data.session, 
+        attendance_status=AttendanceStatus.Present.value     # use correct field name for session id
+    )
+
+    db.add(new_attendance)
+    db.commit()
+    db.refresh(new_attendance)
+
+    return {"message": "Attendance marked", "record": AttendanceResponse.model_validate(new_attendance)}
+
+
+@app.get("/attendance/", response_model=list[AttendanceResponse])
+def get_all_attendance(current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user["role"] != "instructor":
+        raise HTTPException(status_code=403, detail="Access forbidden: instructors only")
+    
+    # Query attendance records from the database
+    attendance_records = db.query(Attendance).all()
+    
+    # Return the records as a list of AttendanceResponse models
+    return attendance_records
+
+@app.get("/attendance/{student_id}", response_model=dict)
+def get_student_attendance(student_id: int, current_user: dict = Depends(get_current_user), db: Session = Depends(get_db)):
+    if current_user["role"] not in ["instructor"]:
+        raise HTTPException(status_code=403, detail="Access forbidden: Instructors only")
+
+    # Query the attendance records for the student
+    records = db.query(Attendance).filter(Attendance.student_id == student_id).all()
+    
+    if not records:
+        raise HTTPException(status_code=404, detail="No records found for this student")
+    
+    # Convert the records to Pydantic models
+    response = [AttendanceResponse.model_validate(r) for r in records]
+
+    # Return the student ID and their attendance records
+    return {"student_id": student_id, "records": response}
 
 # -------------------------------
 # Basic Test Route
@@ -136,54 +244,3 @@ def get_me(current_user: dict = Depends(get_current_user)):
 @app.get("/")
 def home():
     return {"message": "Backend API is running!"}
-# -------------------------------
-# Attendance Routes
-# -------------------------------
-
-# POST: Mark attendance
-
-@app.post("/mark-attendance/")
-def mark_attendance(data: Attendance, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] == "student":
-        student_id = current_user["sub"]
-    elif current_user["role"] in ["admin", "instructor"]:
-        student_id = data.student_id
-    else:
-        raise HTTPException(status_code=403, detail="Access forbidden")
-
-    if student_id not in students_db:
-        raise HTTPException(status_code=404, detail="Student not found")
-
-    for record in attendance_records:
-        if record.student_id == student_id and record.session == data.session:
-            raise HTTPException(status_code=409, detail="Already marked for this session")
-
-    new_record = Attendance(
-        student_id=student_id,
-        timestamp=data.timestamp,
-        session=data.session
-    )
-    attendance_records.append(new_record)
-    return {"message": "Attendance marked", "record": new_record}
-
-
-# GET: Get all attendance records
-@app.get("/attendance/")
-def get_all_attendance(current_user: dict = Depends(get_current_user)):
-    if current_user["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Access forbidden: Admins only")
-    return attendance_records
-
-
-# GET: Get attendance for a student
-
-@app.get("/attendance/{student_id}")
-def get_student_attendance(student_id: str, current_user: dict = Depends(get_current_user)):
-    if current_user["role"] not in ["admin", "instructor"]:
-        raise HTTPException(status_code=403, detail="Access forbidden: Instructors or Admins only")
-
-    records = [record for record in attendance_records if record.student_id == student_id]
-    if not records:
-        raise HTTPException(status_code=404, detail="No records found for this student")
-
-    return {"student_id": student_id, "records": records}
