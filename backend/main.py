@@ -74,7 +74,8 @@ def register_student(student: StudentCreate, db: Session = Depends(get_db)):
         db_student = db.query(Student).filter(Student.regno == student.regno).first()
         if db_student:
             raise HTTPException(status_code=400, detail="Student already exists")
-
+        
+         # Hash password and create student
         hashed_password = pwd_context.hash(student.password)
         new_student = Student(
             regno=student.regno,
@@ -103,7 +104,10 @@ def register_student(student: StudentCreate, db: Session = Depends(get_db)):
                            phone_number=student.phone_number,
                            )
 
-           
+    except HTTPException as http_exc:
+        # Re-raise so FastAPI can return 400 with your custom message
+        raise http_exc
+
     except Exception as e:
      # This will show up in your terminal
         logger.error("Error during student registration: %s", str(e))
@@ -112,8 +116,9 @@ def register_student(student: StudentCreate, db: Session = Depends(get_db)):
     
 @app.post("/register/instructor", response_model=dict)
 def register_instructor(instructor: InstructorCreate, db: Session = Depends(get_db)):
+    
     # Check if instructor already exists
-    db_instructor = db.query(Instructor).filter(Instructor.phone_number == instructor.phone_number).first()
+    db_instructor = db.query(Instructor).filter(Instructor.email == instructor.email).first()
     if db_instructor:
         raise HTTPException(status_code=400, detail="Instructor already exists")
 

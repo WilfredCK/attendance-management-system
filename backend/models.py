@@ -5,19 +5,6 @@ from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Enum
 from sqlalchemy.orm import relationship
 from database import Base
 
-# User Table (General user model)
-# class User(Base):
-#     __tablename__ = "users"
-
-#     id = Column(Integer, primary_key=True, index=True)
-#     username = Column(String, unique=True, index=True)
-#     password = Column(String)
-#     role = Column(String)  # Can be "student", "instructor", or "admin"
-
-#     # Establish relationship to student and instructor tables based on role
-#     student = relationship("Student", back_populates="user", uselist=False)
-#     instructor = relationship("Instructor", back_populates="user", uselist=False)
-
 # Students Table
 class Student(Base):
     __tablename__ = "students"
@@ -33,10 +20,6 @@ class Student(Base):
     phone_number = Column(String)
     role = Column(String)
     programme = Column(String)
-
-    # Create a relationship to the user table
-    # user_id = Column(Integer, ForeignKey("users.id"))
-    # user = relationship("User", back_populates="student")
 
     # Relationship to attendance and facial embeddings
     attendances = relationship("Attendance", back_populates="student")
@@ -55,9 +38,6 @@ class Instructor(Base):
     password = Column(String) 
     role = Column(String)  # role is also available in User model, so not essential here
 
-    # Create a relationship to the user table
-    # user_id = Column(Integer, ForeignKey("users.id"))
-    # user = relationship("User", back_populates="instructor")
 
     class_sessions = relationship("ClassSession", back_populates="instructor")
     courses = relationship("Course", back_populates="instructor")
