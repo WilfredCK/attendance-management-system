@@ -29,7 +29,7 @@ def login_user(email: str, password: str, db: Session = Depends(get_db)):
 
     # If not a student, try instructors
     if not user:
-        instructor = db.query(Instructor).filter(Instructor.phone_number == email).first()
+        instructor = db.query(Instructor).filter(Instructor.email == email).first()
         if instructor and verify_password(password, instructor.password):
             user = instructor
             role = "instructor"
@@ -41,7 +41,7 @@ def login_user(email: str, password: str, db: Session = Depends(get_db)):
     token_data = {"sub": user.email if role == "student" else user.phone_number, "role": role}
     access_token = create_access_token(data=token_data)
 
-    return {"access_token": access_token, "token_type": "bearer"}
+    return {"message":"successifuly logged in!", "access_token": access_token, "token_type": "bearer"}
 
 # Helper function to verify the password using PassLib
 def verify_password(plain_password, hashed_password):

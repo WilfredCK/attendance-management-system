@@ -158,7 +158,7 @@ def oauth2_login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session =
 
 @app.get("/me/")
 def get_me(current_user: dict = Depends(get_current_user)):
-    return {"username": current_user["sub"], "role": current_user["role"]}
+    return {"user_id": current_user["sub"], "role": current_user["role"]}
 
 # -------------------------------
 # Attendance Routes
